@@ -15,7 +15,6 @@ resolvers += "TFly Release" at "http://build.ticketfly.com/artifactory/libs-rele
 credentials += Credentials(Path.userHome / ".artifactory" / ".credentials")
 
 libraryDependencies ++= Seq(
-  "com.typesafe.akka"       %% "akka-actor"       % "2.3.4",
   "org.apache.zookeeper"    % "zookeeper"         % "3.4.6"    exclude("org.slf4j", "slf4j-log4j12")
                                                                exclude("log4j",     "log4j"),
   "org.slf4j"               % "slf4j-simple"      % "1.7.7" % Test,
