@@ -1,24 +1,23 @@
-
 package com.github.bigtoast.zookeeper
 
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfter, WordSpec}
 import org.scalatest.matchers.ShouldMatchers
 import java.util.concurrent.{TimeUnit, CountDownLatch, Executors}
-import akka.dispatch.{Await, ExecutionContext, Future}
-import akka.util.duration._
+import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.duration._
 import org.apache.zookeeper.{WatchedEvent, Watcher, CreateMode}
-import akka.util.Duration
 import compat.Platform
 import com.github.bigtoast.zookeeper.AsyncResponse.FailedAsyncResponse
 import org.apache.zookeeper.KeeperException.{NoNodeException, NotEmptyException, BadVersionException}
 import AsyncZooKeeperClient._
 import org.apache.zookeeper.Watcher.Event.EventType
 import java.util.concurrent.atomic.AtomicInteger
+import scala.concurrent.ExecutionContext.Implicits.global
 
 class AsyncZooKeeperClientSpecs extends WordSpec with ShouldMatchers with BeforeAndAfter with BeforeAndAfterAll {
 
   val eService = Executors.newCachedThreadPool
-  implicit val to = 3 second
+  implicit val to = 3.second
   var zk :AsyncZooKeeperClientImpl = _
 
   class DoAwait[T]( f :Future[T] ) {
@@ -32,15 +31,15 @@ class AsyncZooKeeperClientSpecs extends WordSpec with ShouldMatchers with Before
   }
 
   after {
-    zk.deleteChildren("") map {
-      case _ => zk.close
+    (zk.deleteChildren("") map {
+      case _ => zk.close()
     } recover {
-      case _ => zk.close
-    } await
+      case _ => zk.close()
+    }).await
   }
 
-  override def afterAll {
-    eService.shutdown
+  override def afterAll() {
+    eService.shutdown()
   }
 
   "A relative path should have base path prepended" in {

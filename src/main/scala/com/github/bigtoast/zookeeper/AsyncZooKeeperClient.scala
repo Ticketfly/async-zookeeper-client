@@ -9,10 +9,11 @@ import org.apache.zookeeper.data.Stat
 import org.apache.zookeeper.ZooDefs.Ids
 import scala.collection.JavaConversions._
 import org.apache.zookeeper.AsyncCallback._
-import akka.dispatch.{Await, Future, ExecutionContext, Promise}
+import scala.concurrent.{Await, Future, ExecutionContext, Promise}
 import org.apache.zookeeper.KeeperException.Code
 import java.util
-import akka.util.duration._
+import scala.concurrent.duration._
+import scala.util.{Success, Failure}
 
 
 sealed trait AsyncResponse {
@@ -218,9 +219,9 @@ trait AsyncZooKeeperClient {
 
   /** set a persistent watch on if the children of this node change. If they do the updated ChildResponse will be returned.
     *
-    * @param path
-    * @param persistent
-    * @param onKids
+    * @param path Path
+    * @param persistent If true, then persistt
+    * @param onKids On Kids
     * @return
     */
   def watchChildren(path: String, persistent: => Boolean)(onKids: ChildrenResponse => Unit): Future[ChildrenResponse]
@@ -273,21 +274,21 @@ class AsyncZooKeeperClientImpl(
   /**
    * connect() attaches to the remote zookeeper and sets an instance variable.
    */
-  private[zookeeper] def connect: Unit = {
+  private[zookeeper] def connect(): Unit = {
     import KeeperState._
     val connectionLatch = new CountDownLatch(1)
     val assignLatch = new CountDownLatch(1)
 
     if (zk != null) {
-      zk.close
+      zk.close()
     }
 
     zk = new ZooKeeper(servers, sessionTimeout, new Watcher {
       def process(event: WatchedEvent) = {
-        assignLatch.await
+        assignLatch.await()
         event.getState match {
-          case SyncConnected => connectionLatch.countDown
-          case Expired => connect
+          case SyncConnected => connectionLatch.countDown()
+          case Expired => connect()
           case _ =>
         }
         clientWatcher.foreach {
@@ -295,25 +296,22 @@ class AsyncZooKeeperClientImpl(
         }
       }
     })
-    assignLatch.countDown
+    assignLatch.countDown()
     log.info("Attempting to connect to zookeeper servers {}", servers)
     connectionLatch.await(sessionTimeout, TimeUnit.MILLISECONDS)
     try {
       isAliveSync
       Await.result(createPath(""), 10 seconds)
     } catch {
-      case e => {
-        log.error("Could not connect to zookeeper ensemble: " + servers
-          + ". Connection timed out after " + connectTimeout + " milliseconds!", e)
-
-        throw new RuntimeException("Could not connect to zookeeper ensemble: " + servers
-          + ". Connection timed out after " + connectTimeout + " milliseconds!", e)
-      }
+      case e: Throwable =>
+        val errorMsg = s"Could not connect to zookeeper ensemble: $servers. Connection timed out after $connectTimeout milliseconds!"
+        log.error(errorMsg, e)
+        throw new RuntimeException(errorMsg, e)
     }
   }
 
 
-  private[zookeeper] def handleNull(op: Option[Array[Byte]]): Array[Byte] = if (op == null) null else op.getOrElse(null)
+  private[zookeeper] def handleNull(op: Option[Array[Byte]]): Array[Byte] = if (op == null) null else op.orNull
 
 
   override def subPaths(path: String, sep: Char) =
@@ -322,7 +320,7 @@ class AsyncZooKeeperClientImpl(
       case l :: tail =>
         tail.foldLeft[List[String]](Nil) {
           (xs, x) => (xs.headOption.getOrElse("") + sep.toString + x) :: xs
-        } reverse
+        }.reverse
     }
 
 
@@ -334,7 +332,7 @@ class AsyncZooKeeperClientImpl(
     */
   private[zookeeper] def mkPath(path: String) = (path startsWith "/" match {
     case true => path
-    case false => "%s/%s".format(basePath, path)
+    case false => s"$basePath/$path"
   }).replaceAll("//", "/") match {
     case str if str.length > 1 => str.stripSuffix("/")
     case str => str
@@ -343,36 +341,36 @@ class AsyncZooKeeperClientImpl(
 
   override def handleResponse[T](rc: Int, path: String, p: Promise[T], stat: Stat, cxt: Option[Any])(f: => T): Future[T] = {
     Code.get(rc) match {
-      case Code.OK => p.success(f)
-      case error if path == null => p.failure(FailedAsyncResponse(KeeperException.create(error), Option(path), Option(stat), cxt))
-      case error => p.failure(FailedAsyncResponse(KeeperException.create(error, path), Option(path), Option(stat), cxt))
+      case Code.OK => p.success(f).future
+      case error if path == null => p.failure(FailedAsyncResponse(KeeperException.create(error), Option(path), Option(stat), cxt)).future
+      case error => p.failure(FailedAsyncResponse(KeeperException.create(error, path), Option(path), Option(stat), cxt)).future
     }
   }
 
 
   override def exists(path: String, ctx: Option[Any] = None, watch: Option[Watcher] = None): Future[StatResponse] = {
-    val p = Promise[StatResponse]
-    zk.exists(mkPath(path), watch.getOrElse(null), new StatCallback {
+    val p = Promise[StatResponse]()
+    zk.exists(mkPath(path), watch.orNull, new StatCallback {
       def processResult(rc: Int, path: String, ignore: Any, stat: Stat) {
         handleResponse(rc, path, p, stat, ctx) { StatResponse(path, stat, ctx) }
       }
     }, ctx)
-    p
+    p.future
   }
 
 
   override def getChildren(path: String, ctx: Option[Any] = None, watch: Option[Watcher] = None): Future[ChildrenResponse] = {
-    val p = Promise[ChildrenResponse]
-    zk.getChildren(mkPath(path), watch.getOrElse(null), new Children2Callback {
+    val p = Promise[ChildrenResponse]()
+    zk.getChildren(mkPath(path), watch.orNull, new Children2Callback {
       def processResult(rc: Int, path: String, ignore: Any, children: util.List[String], stat: Stat) {
         handleResponse(rc, path, p, stat, ctx) { ChildrenResponse(children.toSeq, path, stat, ctx)}
       }
     }, ctx)
-    p
+    p.future
   }
 
 
-  override def close = zk.close
+  override def close() = zk.close()
 
 
   override def isAlive: Future[Boolean] = exists("/") map {
@@ -384,7 +382,7 @@ class AsyncZooKeeperClientImpl(
     zk.exists("/", false)
     true
   } catch {
-    case e =>
+    case e: Throwable =>
       log.warn("ZK not connected in isAliveSync", e)
       false
   }
@@ -407,13 +405,13 @@ class AsyncZooKeeperClientImpl(
 
 
   override def create(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None): Future[StringResponse] = {
-    val p = Promise[StringResponse]
+    val p = Promise[StringResponse]()
     zk.create(mkPath(path), handleNull(data), Ids.OPEN_ACL_UNSAFE, createMode, new StringCallback {
       def processResult(rc: Int, path: String, ignore: Any, name: String) {
         handleResponse(rc, path, p, null, ctx) { StringResponse(name, path, ctx)}
       }
     }, ctx)
-    p
+    p.future
   }
 
 
@@ -436,67 +434,57 @@ class AsyncZooKeeperClientImpl(
 
 
   override def get(path: String, ctx: Option[Any] = None, watch: Option[Watcher] = None): Future[DataResponse] = {
-    val p = Promise[DataResponse]
-    zk.getData(mkPath(path), watch.getOrElse(null), new DataCallback {
+    val p = Promise[DataResponse]()
+    zk.getData(mkPath(path), watch.orNull, new DataCallback {
       def processResult(rc: Int, path: String, ignore: Any, data: Array[Byte], stat: Stat) {
         handleResponse(rc, path, p, stat, ctx) { DataResponse(Option(data), path, stat, ctx)}
       }
     }, ctx)
-    p
+    p.future
   }
 
 
   override def set(path: String, data: Option[Array[Byte]], version: Int = -1, ctx: Option[Any] = None): Future[StatResponse] = {
-    val p = Promise[StatResponse]
+    val p = Promise[StatResponse]()
     zk.setData(mkPath(path), handleNull(data), version, new StatCallback {
       def processResult(rc: Int, path: String, ignore: Any, stat: Stat) {
         handleResponse(rc, path, p, stat, ctx) { StatResponse(path, stat, ctx)}
       }
     }, ctx)
-    p
+    p.future
   }
 
 
   override def delete(path: String, version: Int = -1, ctx: Option[Any] = None, force: Boolean = false): Future[VoidResponse] = {
     if (force) {
       deleteChildren(path, ctx) flatMap {
-        _ => delete(path, version, ctx, false)
+        _ => delete(path, version, ctx, force = false)
       }
     } else {
-      val p = Promise[VoidResponse]
+      val p = Promise[VoidResponse]()
       zk.delete(mkPath(path), version, new VoidCallback {
         def processResult(rc: Int, path: String, ignore: Any) {
           handleResponse(rc, path, p, null, ctx) { VoidResponse(path, ctx)}
         }
       }, ctx)
-      p
+      p.future
     }
   }
 
 
   override def deleteChildren(path: String, ctx: Option[Any] = None): Future[VoidResponse] = {
-    def recurse(p: String): Future[VoidResponse] = {
-      getChildren(p) flatMap {
-        response =>
-          Future.sequence {
-            response.children.map {
-              child =>
-                recurse(mkPath(p) + "/" + child)
-            }
-          }
-      } flatMap {
-        seq =>
-          if (p == path)
-            Promise.successful(VoidResponse(path, ctx))
-          else
-            delete(p, -1, ctx)
-      }
-    }
+
+    def recurse(p: String): Future[VoidResponse] = for {
+      response    <- getChildren(p)
+      seq         <- Future.sequence(response.children.map(child => recurse(s"${mkPath(p)}/$child")))
+      delete      <- if (p == path) Future.successful(VoidResponse(path, ctx)) else delete(p, -1, ctx)
+    } yield delete
+
     recurse(path)
   }
 
 
-  override def watchData(path: String)(onData: (String, Option[DataResponse]) => Unit): Future[DataResponse] = watchData(path, true)(onData)
+  override def watchData(path: String)(onData: (String, Option[DataResponse]) => Unit): Future[DataResponse] = watchData(path, persistent = true)(onData)
 
 
   override def watchData(path: String, persistent: => Boolean)(onData: (String, Option[DataResponse]) => Unit): Future[DataResponse] = {
@@ -512,20 +500,20 @@ class AsyncZooKeeperClientImpl(
 
         case e if e == EventType.NodeCreated || e == EventType.NodeDataChanged =>
           get(path, watch = ifPersist).onComplete {
-            case Left(error) =>
-              log.error("Error on NodeCreated callback for path %s".format(mkPath(path)), error)
-            case Right(data) =>
+            case Failure(error) =>
+              log.error(s"Error on NodeCreated callback for path ${mkPath(path)}", error)
+            case Success(data) =>
               onData(mkPath(path), Some(data))
           }
 
         case EventType.NodeDeleted =>
           get(path, watch = ifPersist) onComplete {
-            case Left(error: FailedAsyncResponse) if error.code == Code.NONODE =>
+            case Failure(error: FailedAsyncResponse) if error.code == Code.NONODE =>
               onData(mkPath(path), None)
-            case Right(data) =>
+            case Success(data) =>
               onData(mkPath(path), Some(data))
-            case Left(error) =>
-              log.error("Error on NodeCreated callback for path %s".format(mkPath(path)), error)
+            case Failure(error) =>
+              log.error(s"Error on NodeCreated callback for path ${mkPath(path)}", error)
           }
       }
     }
@@ -534,7 +522,7 @@ class AsyncZooKeeperClientImpl(
   }
 
 
-  override def watchChildren(path: String)(onKids: ChildrenResponse => Unit): Future[ChildrenResponse] = watchChildren(path, true)(onKids)
+  override def watchChildren(path: String)(onKids: ChildrenResponse => Unit): Future[ChildrenResponse] = watchChildren(path, persistent = true)(onKids)
 
 
   override def watchChildren(path: String, persistent: => Boolean)(onKids: ChildrenResponse => Unit): Future[ChildrenResponse] = {
@@ -547,15 +535,15 @@ class AsyncZooKeeperClientImpl(
       def process(event: WatchedEvent) = event.getType match {
         case EventType.NodeChildrenChanged =>
           getChildren(p, watch = ifPersist) onComplete {
-            case Left(error) =>
-              log.error("Error on NodeChildrenChanged callback for path %s".format(p), error)
-            case Right(kids) =>
+            case Failure(error) =>
+              log.error(s"Error on NodeChildrenChanged callback for path $p", error)
+            case Success(kids) =>
               onKids(kids)
           }
           exists(p, watch = ifPersist)
 
         case e =>
-          log.error("Not expecting to get event %s in a watchChildren" format e)
+          log.error(s"Not expecting to get event $e in a watchChildren")
 
       }
     }
@@ -571,5 +559,5 @@ class AsyncZooKeeperClientImpl(
   }
 
 
-  connect
+  connect()
 }

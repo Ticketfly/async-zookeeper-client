@@ -4,21 +4,22 @@ organization := "com.github.bigtoast"
 
 name := "async-zk-client"
 
-version := "0.4.0.TFly-SNAPSHOT"
+version := "0.4.0.TFly"
 
 scalaVersion := "2.11.2"
 
-scalacOptions ++= Seq("-feature", "-language:postfixOps")
+scalacOptions ++= Seq("-feature", "-language:implicitConversions")
 
 resolvers += "TFly Release" at "http://build.ticketfly.com/artifactory/libs-release"
 
 credentials += Credentials(Path.userHome / ".artifactory" / ".credentials")
 
 libraryDependencies ++= Seq(
-  "com.typesafe.akka"       %% "akka-actor"     % "2.3.4",
-  "org.apache.zookeeper"    % "zookeeper"       % "3.4.6",
-  "org.slf4j"               % "slf4j-simple"    % "1.7.7" % Test,
-  "org.scalatest"           %% "scalatest"      % "2.2.0" % Test
+  "com.typesafe.akka"       %% "akka-actor"       % "2.3.4",
+  "org.apache.zookeeper"    % "zookeeper"         % "3.4.6"    exclude("org.slf4j", "slf4j-log4j12")
+                                                               exclude("log4j",     "log4j"),
+  "org.slf4j"               % "slf4j-simple"      % "1.7.7" % Test,
+  "org.scalatest"           %% "scalatest"        % "2.2.0" % Test
 )
 
 graphSettings
