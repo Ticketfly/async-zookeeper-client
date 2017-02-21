@@ -45,3 +45,6 @@ scalacOptions ++= Seq(
   "-language:implicitConversions"
 )
 
+// show elapsed time
+testOptions in Test += Tests.Argument(TestFrameworks.ScalaTest, "-oDF")
+logBuffered in Test := false

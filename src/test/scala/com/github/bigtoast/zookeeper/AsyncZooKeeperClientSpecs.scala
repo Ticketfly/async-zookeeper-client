@@ -1,7 +1,7 @@
 package com.github.bigtoast.zookeeper
 
 import org.scalatest.{BeforeAndAfterAll, BeforeAndAfter, WordSpec}
-import org.scalatest.matchers.ShouldMatchers
+import org.scalatest.Matchers._
 import java.util.concurrent.{TimeUnit, CountDownLatch, Executors}
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration._
@@ -14,7 +14,7 @@ import org.apache.zookeeper.Watcher.Event.EventType
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.ExecutionContext.Implicits.global
 
-class AsyncZooKeeperClientSpecs extends WordSpec with ShouldMatchers with BeforeAndAfter with BeforeAndAfterAll {
+class AsyncZooKeeperClientSpecs extends WordSpec with BeforeAndAfter with BeforeAndAfterAll {
 
   val eService = Executors.newCachedThreadPool
   implicit val to = 3.second
@@ -38,7 +38,7 @@ class AsyncZooKeeperClientSpecs extends WordSpec with ShouldMatchers with Before
     }).await
   }
 
-  override def afterAll() {
+  override def afterAll() = {
     eService.shutdown()
   }
 
