@@ -20,9 +20,8 @@ I didn't implement any ACL stuff because I never use that shiz.
 Api Docs [http://bigtoast.github.com/docs/async-zk-client/0.2.1/](http://bigtoast.github.com/docs/async-zk-client/0.2.1/)
 
 Currently depends on
- * ZK 3.4.5
- * akka-actor 2.0.5
- * Scala 2.9.2
+ * ZK 3.4.9
+ * Scala 2.11.8
 
 Getting Started
 ---------------
@@ -32,7 +31,7 @@ build.sbt
 
 resolvers += "Bigtoast Repo" at "http://bigtoast.github.com/repo"
 
-libraryDependencies += "com.github.bigtoast" %% "async-zk-api" % "0.3.0"
+libraryDependencies += "com.ticketfly" %% "async-zk-api" % "0.5.0"
 
 ```
 
