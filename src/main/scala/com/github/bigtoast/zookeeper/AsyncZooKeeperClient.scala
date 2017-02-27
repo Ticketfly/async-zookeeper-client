@@ -64,9 +64,12 @@ object AsyncZooKeeperClient {
              sessionTimeout:  Int,
              connectTimeout:  Int,
              basePath:        String,
-             watcher:         Option[AsyncZooKeeperClient => Unit],
-             eCtx:            ExecutionContext
-             ): AsyncZooKeeperClient = new AsyncZooKeeperClientImpl(servers, sessionTimeout, connectTimeout, basePath, watcher, eCtx)
+             watcher:         Option[AsyncZooKeeperClient => Unit]
+             )(implicit ec: ExecutionContext): AsyncZooKeeperClient = {
+    val cli = new AsyncZooKeeperClientImpl(servers, sessionTimeout, connectTimeout, basePath, watcher)
+    cli.connect
+    cli
+  }
 }
 
 /**
@@ -125,14 +128,14 @@ trait AsyncZooKeeperClient {
   def close() :Unit
 
   /** Checks the connection by checking existence of "/" */
-  def isAlive: Future[Boolean]
+  def isAlive(implicit ec: ExecutionContext): Future[Boolean]
 
   /** Check the connection synchronously */
   def isAliveSync: Boolean
 
 
   /** Recursively create a path with persistent nodes and no watches set. */
-  def createPath(path: String): Future[VoidResponse]
+  def createPath(path: String)(implicit ec: ExecutionContext): Future[VoidResponse]
 
 
   /** Create a path with OPEN_ACL_UNSAFE hardcoded
@@ -140,20 +143,20 @@ trait AsyncZooKeeperClient {
     *      http://zookeeper.apache.org/doc/r3.4.1/api/org/apache/zookeeper/ZooKeeper.html#create(java.lang.String, byte[], java.util.List, org.apache.zookeeper.CreateMode, org.apache.zookeeper.AsyncCallback.StringCallback, java.lang.Object)
     *      </a>
     */
-  def create(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None): Future[StringResponse]
+  def create(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None)(implicit ec: ExecutionContext): Future[StringResponse]
 
 
   /** Create a node and then return it. Under the hood this is a create followed by a get. If the stat or data is not
     * needed use a plain create which is cheaper.
     */
-  def createAndGet(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None, watch: Option[Watcher] = None): Future[DataResponse]
+  def createAndGet(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None, watch: Option[Watcher] = None)(implicit ec: ExecutionContext): Future[DataResponse]
 
 
   /** Return the node if it exists, otherwise create a new node with the data passed in. If the node is created a get will
     * be called and the value returned. In case of a race condition where a two or more requests are executed at the same
     * time and one of the creates will fail with a NodeExistsException, it will be handled and a get will be called.
     */
-  def getOrCreate(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None): Future[DataResponse]
+  def getOrCreate(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None)(implicit ec: ExecutionContext): Future[DataResponse]
 
 
   /** Wrapper around zk getData method. Watch is hardcoded to false.
@@ -182,17 +185,17 @@ trait AsyncZooKeeperClient {
     *
     * @param force Delete all children of this node
     */
-  def delete(path: String, version: Int = -1, ctx: Option[Any] = None, force: Boolean = false): Future[VoidResponse]
+  def delete(path: String, version: Int = -1, ctx: Option[Any] = None, force: Boolean = false)(implicit ec: ExecutionContext): Future[VoidResponse]
 
 
   /** Delete all the children of a node but not the node. */
-  def deleteChildren(path: String, ctx: Option[Any] = None): Future[VoidResponse]
+  def deleteChildren(path: String, ctx: Option[Any] = None)(implicit ec: ExecutionContext): Future[VoidResponse]
 
 
   /** Set a persistent watch on data.
     * @see watchData
     */
-  def watchData(path: String)(onData: (String, Option[DataResponse]) => Unit): Future[DataResponse]
+  def watchData(path: String)(onData: (String, Option[DataResponse]) => Unit)(implicit ec: ExecutionContext): Future[DataResponse]
 
 
   /** set a persistent watch on a node listening for data changes. If a NodeDataChanged event is received or a
@@ -208,13 +211,13 @@ trait AsyncZooKeeperClient {
     *                   of what is passed into the function
     * @return initial data. If this returns successfully the watch was set otherwise it wasn't
     */
-  def watchData(path: String, persistent: => Boolean)(onData: (String, Option[DataResponse]) => Unit): Future[DataResponse]
+  def watchData(path: String, persistent: => Boolean)(onData: (String, Option[DataResponse]) => Unit)(implicit ec: ExecutionContext): Future[DataResponse]
 
 
   /** Sets a persistent child watch.
     * @see watchChildren
     */
-  def watchChildren(path: String)(onKids: ChildrenResponse => Unit): Future[ChildrenResponse]
+  def watchChildren(path: String)(onKids: ChildrenResponse => Unit)(implicit ec: ExecutionContext): Future[ChildrenResponse]
 
 
   /** set a persistent watch on if the children of this node change. If they do the updated ChildResponse will be returned.
@@ -224,7 +227,7 @@ trait AsyncZooKeeperClient {
     * @param onKids On Kids
     * @return
     */
-  def watchChildren(path: String, persistent: => Boolean)(onKids: ChildrenResponse => Unit): Future[ChildrenResponse]
+  def watchChildren(path: String, persistent: => Boolean)(onKids: ChildrenResponse => Unit)(implicit ec: ExecutionContext): Future[ChildrenResponse]
 
 
 
@@ -235,18 +238,15 @@ trait AsyncZooKeeperClient {
   def watchConnection(onState: KeeperState => Unit) :Unit
 }
 
-class AsyncZooKeeperClientImpl(
+private[zookeeper] class AsyncZooKeeperClientImpl(
           val servers: String,
           val sessionTimeout: Int,
           val connectTimeout: Int,
           val basePath: String,
-          watcher: Option[AsyncZooKeeperClient => Unit],
-          eCtx: ExecutionContext
-  ) extends AsyncZooKeeperClient {
+          watcher: Option[AsyncZooKeeperClient => Unit]
+) extends AsyncZooKeeperClient {
 
   import AsyncResponse._
-
-  implicit val c = eCtx
 
   private val log = LoggerFactory.getLogger(this.getClass)
 
@@ -254,27 +254,12 @@ class AsyncZooKeeperClientImpl(
 
   @volatile private var zk: ZooKeeper = null
 
-  def this(servers: String, sessionTimeout: Int, connectTimeout: Int, basePath: String, eCtx: ExecutionContext) =
-    this(servers, sessionTimeout, connectTimeout, basePath, None, eCtx)
-
-  def this(servers: String, sessionTimeout: Int, connectTimeout: Int,
-           basePath: String, watcher: AsyncZooKeeperClient => Unit, eCtx: ExecutionContext) =
-    this(servers, sessionTimeout, connectTimeout, basePath, Some(watcher), eCtx)
-
-  def this(servers: String, eCtx: ExecutionContext) =
-    this(servers, 3000, 3000, "/", None, eCtx)
-
-  def this(servers: String, watcher: AsyncZooKeeperClient => Unit, eCtx: ExecutionContext) =
-    this(servers, 3000, 3000, "/", watcher, eCtx)
-
-
   override def underlying: Option[ZooKeeper] = Option(zk)
-
 
   /**
    * connect() attaches to the remote zookeeper and sets an instance variable.
    */
-  private[zookeeper] def connect(): Unit = {
+  private[zookeeper] def connect(implicit ec: ExecutionContext): Unit = {
     import KeeperState._
     val connectionLatch = new CountDownLatch(1)
     val assignLatch = new CountDownLatch(1)
@@ -288,7 +273,7 @@ class AsyncZooKeeperClientImpl(
         assignLatch.await()
         event.getState match {
           case SyncConnected => connectionLatch.countDown()
-          case Expired => connect()
+          case Expired => connect
           case _ =>
         }
         clientWatcher.foreach {
@@ -331,9 +316,10 @@ class AsyncZooKeeperClientImpl(
     * @param path relative or absolute path
     * @return absolute zk path
     */
-  private[zookeeper] def mkPath(path: String) = (path startsWith "/" match {
-    case true => path
-    case false => s"$basePath/$path"
+  protected[zookeeper] def mkPath(path: String) = (if (path startsWith "/") {
+    path
+  } else {
+    s"$basePath/$path"
   }).replaceAll("//", "/") match {
     case str if str.length > 1 => str.stripSuffix("/")
     case str => str
@@ -376,7 +362,7 @@ class AsyncZooKeeperClientImpl(
   override def close() = zk.close()
 
 
-  override def isAlive: Future[Boolean] = exists("/") map {
+  override def isAlive(implicit ec: ExecutionContext): Future[Boolean] = exists("/") map {
     _.stat.getVersion >= 0
   }
 
@@ -391,7 +377,7 @@ class AsyncZooKeeperClientImpl(
   }
 
 
-  override def createPath(path: String): Future[VoidResponse] = {
+  override def createPath(path: String)(implicit ec: ExecutionContext): Future[VoidResponse] = {
     Future.sequence {
       for {
         subPath <- subPaths(mkPath(path), '/')
@@ -407,7 +393,7 @@ class AsyncZooKeeperClientImpl(
   }
 
 
-  override def create(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None): Future[StringResponse] = {
+  override def create(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None)(implicit ec: ExecutionContext): Future[StringResponse] = {
     val p = Promise[StringResponse]()
     zk.create(mkPath(path), handleNull(data), Ids.OPEN_ACL_UNSAFE, createMode, new StringCallback {
       def processResult(rc: Int, path: String, ignore: Any, name: String) = {
@@ -419,12 +405,12 @@ class AsyncZooKeeperClientImpl(
   }
 
 
-  override def createAndGet(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None, watch: Option[Watcher] = None): Future[DataResponse] = {
+  override def createAndGet(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None, watch: Option[Watcher] = None)(implicit ec: ExecutionContext): Future[DataResponse] = {
     create(path, data, createMode, ctx) flatMap { _ => get(path, ctx, watch = watch)}
   }
 
 
-  override def getOrCreate(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None): Future[DataResponse] = {
+  override def getOrCreate(path: String, data: Option[Array[Byte]], createMode: CreateMode, ctx: Option[Any] = None)(implicit ec: ExecutionContext): Future[DataResponse] = {
     get(path) recoverWith {
       case FailedAsyncResponse(e: KeeperException.NoNodeException, _, _, _) =>
         create(path, data, createMode, ctx) flatMap {
@@ -461,7 +447,7 @@ class AsyncZooKeeperClientImpl(
   }
 
 
-  override def delete(path: String, version: Int = -1, ctx: Option[Any] = None, force: Boolean = false): Future[VoidResponse] = {
+  override def delete(path: String, version: Int = -1, ctx: Option[Any] = None, force: Boolean = false)(implicit ec: ExecutionContext): Future[VoidResponse] = {
     if (force) {
       deleteChildren(path, ctx) flatMap {
         _ => delete(path, version, ctx, force = false)
@@ -479,7 +465,7 @@ class AsyncZooKeeperClientImpl(
   }
 
 
-  override def deleteChildren(path: String, ctx: Option[Any] = None): Future[VoidResponse] = {
+  override def deleteChildren(path: String, ctx: Option[Any] = None)(implicit ec: ExecutionContext): Future[VoidResponse] = {
 
     def recurse(p: String): Future[VoidResponse] = for {
       response    <- getChildren(p)
@@ -491,10 +477,10 @@ class AsyncZooKeeperClientImpl(
   }
 
 
-  override def watchData(path: String)(onData: (String, Option[DataResponse]) => Unit): Future[DataResponse] = watchData(path, persistent = true)(onData)
+  override def watchData(path: String)(onData: (String, Option[DataResponse]) => Unit)(implicit ec: ExecutionContext): Future[DataResponse] = watchData(path, persistent = true)(onData)
 
 
-  override def watchData(path: String, persistent: => Boolean)(onData: (String, Option[DataResponse]) => Unit): Future[DataResponse] = {
+  override def watchData(path: String, persistent: => Boolean)(onData: (String, Option[DataResponse]) => Unit)(implicit ec: ExecutionContext): Future[DataResponse] = {
     val w = new Watcher {
 
       def ifPersist: Option[Watcher] = {
@@ -530,10 +516,10 @@ class AsyncZooKeeperClientImpl(
   }
 
 
-  override def watchChildren(path: String)(onKids: ChildrenResponse => Unit): Future[ChildrenResponse] = watchChildren(path, persistent = true)(onKids)
+  override def watchChildren(path: String)(onKids: ChildrenResponse => Unit)(implicit ec: ExecutionContext): Future[ChildrenResponse] = watchChildren(path, persistent = true)(onKids)
 
 
-  override def watchChildren(path: String, persistent: => Boolean)(onKids: ChildrenResponse => Unit): Future[ChildrenResponse] = {
+  override def watchChildren(path: String, persistent: => Boolean)(onKids: ChildrenResponse => Unit)(implicit ec: ExecutionContext): Future[ChildrenResponse] = {
     val p = mkPath(path)
     val w = new Watcher {
       def ifPersist: Option[Watcher] = {
@@ -567,6 +553,4 @@ class AsyncZooKeeperClientImpl(
     clientWatcher = Some(w)
   }
 
-
-  connect()
 }
